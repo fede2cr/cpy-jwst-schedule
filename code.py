@@ -2,15 +2,8 @@ import time
 import adafruit_connection_manager
 import adafruit_ntp
 import wifi
+from adafruit_datetime import datetime, date
 from adafruit_magtag.magtag import MagTag
-
-'''
-TODO:
-- date comparison (it's prints the complete list, for now)
-- turn on deep sleep
-- download schedule file: https://www.stsci.edu/files/live/sites/www/files/home/jwst/science-execution/observing-schedules/_documents/20240715_report_20240712.txt
-- code clean up
-'''
 
 magtag = MagTag()
 
@@ -27,58 +20,76 @@ magtag.add_text(
     #text_anchor_point=(0.5, 0.5),
     text_scale=1,
 )
-
+pool = adafruit_connection_manager.get_radio_socketpool(wifi.radio)
+ntp = adafruit_ntp.NTP(pool, tz_offset=0)
+ntp_time = ntp.datetime
 
 def jwst_sched_parse():
+    '''
+    Format is: chars and column
+    13 VISIT ID
+    10 PCS MODE
+    29 VISIT TYPE
+    58:79 SCHEDULED START TIME
+    80:91 DURATION
+    51 SCIENCE INSTRUMENT AND MODE
+    31 TARGET NAME
+    30 CATEGORY
+    32 KEYWORDS
+    '''
     sched_file = open('20240715_report_20240712.txt', 'r')
     Lines = sched_file.readlines()
     line_count=0
+    reg_count=0
 
     sched = { }
     for line in Lines:
         line_count+=1
-        if len(line) > 1 and line_count > 4:
+        find_date = line.find('2024')
+        if len(line) > 1 and line_count > 4 and find_date != -1:
             start_time = line[58:78]
             duration = line[80:91]
             instrument = line[93:144]
             target = line[145:176]
             category = line[178:208]
             comment = line[210:]
-            sched[line_count] = {"start_time": start_time,
+            #print("|"+comment+"|")
+            sched[reg_count] = {"start_time": time_parse(start_time),
                                  "duration": duration,
                                  "instrument": instrument,
                                  "target": target,
                                  "category": category,
                                  "comment": comment
                                 }
+            reg_count+=1
             #time.sleep(5)
     return sched
 
-pool = adafruit_connection_manager.get_radio_socketpool(wifi.radio)
-ntp = adafruit_ntp.NTP(pool, tz_offset=0)
-sched = jwst_sched_parse()
-print(ntp.datetime)
-print(dir(ntp.datetime)) # 2024-07-15T06:03:54Z
-current_time = (str(ntp.datetime.tm_year)+"-"+
-                str("{:02d}".format(ntp.datetime.tm_mon))+"-"+
-                str("{:02d}".format(ntp.datetime.tm_mday))+"T"+
-                str("{:02d}".format(ntp.datetime.tm_hour))+":"+
-                str("{:02d}".format(ntp.datetime.tm_min))+":"+
-                str("{:02d}".format(ntp.datetime.tm_sec))+"Z"
-               )
-print(current_time)
+def time_parse(file_time):
+    return time.struct_time((int(file_time[0:4]),
+                             int(file_time[5:7]), int(file_time[8:10]),
+                             int(file_time[11:13]), int(file_time[14:16]), int(file_time[17:19]),
+                             0, 0, -1))    
 
-#print(sched)
-count = 5
+sched = jwst_sched_parse()
+count = 0
+
 while True:
     sched_line = sched[count]
-    magtag.set_text("Current time: " + current_time + "\n" +
-                    sched_line["start_time"] + " during: " + 
-                    sched_line["duration"] + "\n" +
-                    sched_line["instrument"] + "\n" +
-                    sched_line["target"] + "\n" +
-                    sched_line["category"] + "\n" +
-                    sched_line["comment"])
+    if time.mktime(ntp_time) > time.mktime(sched_line["start_time"]):
+        print(">")
+    else:
+        print("<")
+
+        magtag.set_text("Current time: " + str(datetime.fromtimestamp(time.mktime(ntp_time))) + "\n" +
+                    "Duration: " + sched_line["duration"] + "\n" +
+                    "Instrument: " + sched_line["instrument"] + "\n" +
+                    "Target: " + sched_line["target"] + "\n" +
+                    "Category: " + sched_line["category"] + "\n" +
+                    "Comment: " + sched_line["comment"])
+        time.sleep(120)
+        magtag.exit_and_deep_sleep(1800)
+
     count+=1
-    time.sleep(10)
-#magtag.exit_and_deep_sleep(10)
+#    time.sleep(1)
+
